@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firestore Data Manager</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-firestore.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
+
+        // Global variables for Firebase, provided by the environment
+        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : 'null');
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Global Firebase instances and data
+        let db;
+        let auth;
+        let userId;
+
+        // The single document that stores all our data
+        let masterData = {
+            products: [],
+            materials: [],
+            productDetails: []
+        };
+        
+        let customAlert, alertMessage;
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            // Get DOM elements for the custom alert modal
+            customAlert = document.getElementById('customAlert');
+            alertMessage = document.getElementById('alertMessage');
+            document.getElementById('alertCloseBtn').addEventListener('click', () => customAlert.classList.add('hidden'));
+
+            initializeFirebase();
+        });
+
+        // Initialize Firebase and set up authentication
+        async function initializeFirebase() {
+            try {
+                if (!window.firebaseConfig) {
+                    showCustomAlert("Firebase config not available. Running in local-only mode.");
+                    return;
+                }
+
+                const app = initializeApp(window.firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                        console.log("Firebase initialized. Signed in as:", userId);
+                        fetchAndListenForData();
+                    } else {
+                        if (window.initialAuthToken) {
+                            await signInWithCustomToken(auth, window.initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                showCustomAlert("Error initializing Firebase. Please check the console for details.");
+            }
+        }
+
+        // Fetch and listen for real-time updates from the master document
+        function fetchAndListenForData() {
+            if (!db || !userId) {
+                console.error("Database or User ID not available.");
+                return;
+            }
+
+            const masterDataRef = doc(db, `artifacts/${window.appId}/public/data/masterData`);
+            
+            // Use onSnapshot for real-time updates
+            onSnapshot(masterDataRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    masterData = docSnap.data();
+                    console.log("Fetched real-time data from Firestore.");
+                } else {
+                    console.log("No master data found. A new document will be created on save.");
+                }
+                renderUI();
+            }, (error) => {
+                console.error("Error fetching real-time data:", error);
+                showCustomAlert("Error fetching real-time data. Check the console.");
+            });
+        }
+        
+        // --- UI Rendering Functions ---
+        function renderUI() {
+            renderProducts();
+            renderMaterials();
+            renderProductDetails();
+        }
+
+        function renderProducts() {
+            const container = document.getElementById('productsTableBody');
+            container.innerHTML = '';
+            masterData.products.forEach(p => {
+                const row = `
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3">${p.code}</td>
+                        <td class="p-3">${p.name}</td>
+                        <td class="p-3">${p.category}</td>
+                    </tr>`;
+                container.innerHTML += row;
+            });
+        }
+
+        function renderMaterials() {
+            const container = document.getElementById('materialsTableBody');
+            container.innerHTML = '';
+            masterData.materials.forEach(m => {
+                const finishes = m.finishes.map(f => `(${f.code}) ${f.name}`).join(', ');
+                const row = `
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3">${m.code}</td>
+                        <td class="p-3">${m.name}</td>
+                        <td class="p-3">${finishes}</td>
+                    </tr>`;
+                container.innerHTML += row;
+            });
+        }
+        
+        function renderProductDetails() {
+            const container = document.getElementById('productDetailsTableBody');
+            container.innerHTML = '';
+            masterData.productDetails.forEach(pd => {
+                const variations = pd.variations.map(v => {
+                    const sizes = v.sizes.map(s => `(${s.code}) ${s.name}`).join(', ');
+                    return `(${v.code}) ${v.name}: ${sizes}`;
+                }).join('; ');
+                
+                const row = `
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3">${pd.code}</td>
+                        <td class="p-3">${pd.name}</td>
+                        <td class="p-3">${variations}</td>
+                    </tr>`;
+                container.innerHTML += row;
+            });
+        }
+
+        // --- Data Manipulation Functions ---
+
+        function addProduct() {
+            const code = document.getElementById('newProductCode').value.toUpperCase();
+            const name = document.getElementById('newProductName').value;
+            const category = document.getElementById('newProductCategory').value.toUpperCase();
+
+            if (!code || !name || !category) { showCustomAlert("Please fill all product fields."); return; }
+            if (masterData.products.some(p => p.code === code)) { showCustomAlert("Product code already exists."); return; }
+
+            masterData.products.push({ code, name, category });
+            renderProducts();
+            clearForm('addProductForm');
+        }
+
+        function addMaterial() {
+            const code = document.getElementById('newMaterialCode').value.toUpperCase();
+            const name = document.getElementById('newMaterialName').value;
+            const finishCode = document.getElementById('newFinishCode').value;
+            const finishName = document.getElementById('newFinishName').value;
+
+            if (!code || !name || !finishCode || !finishName) { showCustomAlert("Please fill all material fields."); return; }
+            
+            let material = masterData.materials.find(m => m.code === code);
+            if (!material) {
+                material = { code, name, finishes: [] };
+                masterData.materials.push(material);
+            }
+            if (material.finishes.some(f => f.code === finishCode)) { showCustomAlert("Finish code already exists for this material."); return; }
+            
+            material.finishes.push({ code: finishCode, name: finishName });
+            renderMaterials();
+            clearForm('addMaterialForm');
+        }
+
+        function addProductDetail() {
+            const code = document.getElementById('newPDCode').value.toUpperCase();
+            const name = document.getElementById('newPDName').value;
+            const variationCode = document.getElementById('newVariationCode').value;
+            const variationName = document.getElementById('newVariationName').value;
+            const sizeCode = document.getElementById('newSizeCode').value;
+            const sizeName = document.getElementById('newSizeName').value;
+
+            if (!code || !name || !variationCode || !variationName || !sizeCode || !sizeName) {
+                showCustomAlert("Please fill all product detail fields.");
+                return;
+            }
+
+            let productDetail = masterData.productDetails.find(p => p.code === code);
+            if (!productDetail) {
+                productDetail = { code, name, variations: [] };
+                masterData.productDetails.push(productDetail);
+            }
+
+            let variation = productDetail.variations.find(v => v.code === variationCode);
+            if (!variation) {
+                variation = { code: variationCode, name: variationName, sizes: [] };
+                productDetail.variations.push(variation);
+            }
+            if (variation.sizes.some(s => s.code === sizeCode)) { showCustomAlert("Size code already exists for this variation."); return; }
+
+            variation.sizes.push({ code: sizeCode, name: sizeName });
+            renderProductDetails();
+            clearForm('addProductDetailForm');
+        }
+
+        // --- Save to Firebase Function (The "Foolproof" Part) ---
+        async function saveToFirebase() {
+            if (!db) { showCustomAlert("Firebase not initialized."); return; }
+            
+            try {
+                const masterDataRef = doc(db, `artifacts/${window.appId}/public/data/masterData`);
+                // Use a single setDoc to overwrite the entire document
+                await setDoc(masterDataRef, masterData);
+                showCustomAlert("All data saved successfully to Firebase!");
+            } catch (error) {
+                console.error("Error saving to Firebase:", error);
+                showCustomAlert("Error saving to Firebase. Check the console.");
+            }
+        }
+        
+        // --- Utility Functions ---
+        function clearForm(formId) {
+            document.getElementById(formId).reset();
+        }
+
+        function showCustomAlert(message) {
+            alertMessage.textContent = message;
+            customAlert.classList.remove('hidden');
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f5f5f7;
+            color: #1d1d1f;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            background-color: #ffffff;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .input-group label {
+            font-weight: 600;
+        }
+        .table-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e5e5ea;
+            border-radius: 0.5rem;
+        }
+        .table-container table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .table-container th, .table-container td {
+            text-align: left;
+            padding: 1rem;
+            border-bottom: 1px solid #e5e5ea;
+        }
+        .btn {
+            background-color: #1c1c1e;
+            color: #ffffff;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            transition: background-color 0.15s ease-in-out;
+            cursor: pointer;
+        }
+        .btn:hover {
+            background-color: #3a3a3c;
+        }
+        .btn-green {
+            background-color: #34d399;
+            color: #1d1d1f;
+        }
+        .btn-green:hover {
+            background-color: #10b981;
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container">
+        <h1 class="text-4xl font-black text-center my-8">Firestore Data Manager</h1>
+        <p id="userIdDisplay" class="text-sm text-center text-gray-500 mb-8"></p>
+
+        <!-- Save button -->
+        <div class="flex justify-center mb-8">
+            <button onclick="saveToFirebase()" class="btn btn-green">Save All Data to Firebase</button>
+        </div>
+        
+        <!-- Products Section -->
+        <div class="card">
+            <h2 class="text-2xl font-bold mb-4">Products</h2>
+            <div class="table-container mb-4">
+                <table class="min-w-full">
+                    <thead class="sticky top-0 bg-white">
+                        <tr>
+                            <th class="p-3">Code</th>
+                            <th class="p-3">Name</th>
+                            <th class="p-3">Category</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productsTableBody"></tbody>
+                </table>
+            </div>
+            <form id="addProductForm" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div class="input-group">
+                    <label for="newProductCode">Code</label>
+                    <input type="text" id="newProductCode" class="border rounded p-2" placeholder="e.g., SST">
+                </div>
+                <div class="input-group">
+                    <label for="newProductName">Name</label>
+                    <input type="text" id="newProductName" class="border rounded p-2" placeholder="e.g., Slant Side Table">
+                </div>
+                <div class="input-group">
+                    <label for="newProductCategory">Category</label>
+                    <input type="text" id="newProductCategory" class="border rounded p-2" placeholder="e.g., C">
+                </div>
+                <button type="button" onclick="addProduct()" class="btn">Add Product</button>
+            </form>
+        </div>
+
+        <!-- Materials Section -->
+        <div class="card">
+            <h2 class="text-2xl font-bold mb-4">Materials</h2>
+            <div class="table-container mb-4">
+                <table class="min-w-full">
+                    <thead class="sticky top-0 bg-white">
+                        <tr>
+                            <th class="p-3">Code</th>
+                            <th class="p-3">Name</th>
+                            <th class="p-3">Finishes (Code)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="materialsTableBody"></tbody>
+                </table>
+            </div>
+            <form id="addMaterialForm" class="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+                <div class="input-group">
+                    <label for="newMaterialCode">Code</label>
+                    <input type="text" id="newMaterialCode" class="border rounded p-2" placeholder="e.g., A">
+                </div>
+                <div class="input-group">
+                    <label for="newMaterialName">Name</label>
+                    <input type="text" id="newMaterialName" class="border rounded p-2" placeholder="e.g., Ash">
+                </div>
+                <div class="input-group">
+                    <label for="newFinishCode">Finish Code</label>
+                    <input type="text" id="newFinishCode" class="border rounded p-2" placeholder="e.g., 0">
+                </div>
+                <div class="input-group">
+                    <label for="newFinishName">Finish Name</label>
+                    <input type="text" id="newFinishName" class="border rounded p-2" placeholder="e.g., Unfinished">
+                </div>
+                <button type="button" onclick="addMaterial()" class="btn">Add Material/Finish</button>
+            </form>
+        </div>
+
+        <!-- Product Details Section -->
+        <div class="card">
+            <h2 class="text-2xl font-bold mb-4">Product Details (Variations & Sizes)</h2>
+            <div class="table-container mb-4">
+                <table class="min-w-full">
+                    <thead class="sticky top-0 bg-white">
+                        <tr>
+                            <th class="p-3">Code</th>
+                            <th class="p-3">Name</th>
+                            <th class="p-3">Variations (Code:Name)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productDetailsTableBody"></tbody>
+                </table>
+            </div>
+            <form id="addProductDetailForm" class="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
+                <div class="input-group">
+                    <label for="newPDCode">P. Code</label>
+                    <input type="text" id="newPDCode" class="border rounded p-2" placeholder="e.g., TPT">
+                </div>
+                <div class="input-group">
+                    <label for="newPDName">P. Name</label>
+                    <input type="text" id="newPDName" class="border rounded p-2" placeholder="e.g., Pyramid Table">
+                </div>
+                <div class="input-group">
+                    <label for="newVariationCode">Var. Code</label>
+                    <input type="text" id="newVariationCode" class="border rounded p-2" placeholder="e.g., 01">
+                </div>
+                <div class="input-group">
+                    <label for="newVariationName">Var. Name</label>
+                    <input type="text" id="newVariationName" class="border rounded p-2" placeholder="e.g., Small">
+                </div>
+                <div class="input-group">
+                    <label for="newSizeCode">Size Code</label>
+                    <input type="text" id="newSizeCode" class="border rounded p-2" placeholder="e.g., A">
+                </div>
+                <div class="input-group">
+                    <label for="newSizeName">Size Name</label>
+                    <input type="text" id="newSizeName" class="border rounded p-2" placeholder="e.g., Ø240x500">
+                </div>
+                <button type="button" onclick="addProductDetail()" class="btn md:col-start-6">Add Variation/Size</button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Custom Alert Modal -->
+    <div id="customAlert" class="modal-overlay hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl text-center">
+            <p id="alertMessage" class="mb-4"></p>
+            <button id="alertCloseBtn" class="bg-gray-800 text-white px-4 py-2 rounded-md">OK</button>
+        </div>
+    </div>
+</body>
+</html>
